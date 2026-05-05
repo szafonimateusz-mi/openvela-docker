@@ -11,6 +11,7 @@ keep_going=0
 print_list=0
 max_targets=0
 artifact_root="ci-artifacts/quick"
+log_tail_lines="${OPENVELA_CI_LOG_TAIL_LINES:-200}"
 targets=(
   "vendor/openvela/boards/vela/configs/goldfish-arm64-v8a-ap/ --cmake"
   "vendor/openvela/boards/vela/configs/goldfish-x86_64-ap/ --cmake"
@@ -42,6 +43,10 @@ Options:
   --keep-going         Continue after failed target.
   --print-list         Print resolved target specs without building.
   -h, --help           Show this help.
+
+Environment:
+  OPENVELA_CI_LOG_TAIL_LINES
+                       Failed build log lines printed to stderr. Default: 200.
 EOF
 }
 
@@ -234,6 +239,11 @@ if [[ ! "${max_targets}" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
+if [[ ! "${log_tail_lines}" =~ ^[0-9]+$ ]]; then
+  echo "openvela-ci-quick: OPENVELA_CI_LOG_TAIL_LINES must be a non-negative integer" >&2
+  exit 2
+fi
+
 if [[ "${max_targets}" -gt 0 && "${#targets[@]}" -gt "${max_targets}" ]]; then
   targets=("${targets[@]:0:${max_targets}}")
 fi
@@ -287,6 +297,11 @@ for spec in "${targets[@]}"; do
     printf 'PASS\t%s\t%s\t%s\n' "${target}" "${mode}" "${log_file}" >> "${summary}"
   else
     echo "FAIL ${target}; see ${log_file}" >&2
+    if [[ "${log_tail_lines}" -gt 0 ]]; then
+      echo "::group::${target} build log tail" >&2
+      tail -n "${log_tail_lines}" "${log_file}" >&2 || true
+      echo "::endgroup::" >&2
+    fi
     printf 'FAIL\t%s\t%s\t%s\n' "${target}" "${mode}" "${log_file}" >> "${summary}"
     status=1
     if [[ "${keep_going}" -eq 0 ]]; then

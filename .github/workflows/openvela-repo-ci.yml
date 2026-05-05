@@ -79,6 +79,24 @@ jobs:
             --groups "${{ inputs.manifest-groups }}" \
             --jobs "${{ inputs.jobs }}"
 
+      - name: Ensure OpenVela build helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "${GITHUB_WORKSPACE}/openvela"
+
+          if [[ ! -f build/envsetup.sh ]]; then
+            rm -rf build
+            git clone \
+              --depth=1 \
+              --branch "${{ inputs.manifest-branch }}" \
+              https://github.com/open-vela/build.git \
+              build
+          fi
+
+          test -f build/envsetup.sh
+
       - name: Resolve repository path
         id: repo_path
         shell: bash
