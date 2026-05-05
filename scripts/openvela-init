@@ -6,7 +6,7 @@ set -euo pipefail
 manifest_url="https://github.com/open-vela/manifests.git"
 branch="dev"
 manifest="openvela.xml"
-groups="default,platform-linux"
+groups=""
 jobs="$(nproc)"
 depth_args=(--depth=1)
 sync_only=0
@@ -22,7 +22,7 @@ Options:
                        Default: https://github.com/open-vela/manifests.git
   --branch <branch>   Manifest branch. Default: dev
   --manifest <file>   Manifest file. Default: openvela.xml
-  --groups <groups>   Repo groups. Default: default,platform-linux
+  --groups <groups>   Optional repo groups. Default: use manifest defaults.
   --jobs <n>          Sync parallelism. Default: nproc
   --no-depth          Do not pass --depth=1 to repo init.
   --sync-only         Skip repo init and only run repo sync.
@@ -95,13 +95,20 @@ if ! git config --global color.ui >/dev/null; then
 fi
 
 if [[ "${sync_only}" -eq 0 ]]; then
-  repo init \
-    -u "${manifest_url}" \
-    -b "${branch}" \
-    -m "${manifest}" \
-    --group="${groups}" \
-    --git-lfs \
+  repo_init_args=(
+    repo init
+    -u "${manifest_url}"
+    -b "${branch}"
+    -m "${manifest}"
+    --git-lfs
     "${depth_args[@]}"
+  )
+
+  if [[ -n "${groups}" ]]; then
+    repo_init_args+=(--group="${groups}")
+  fi
+
+  "${repo_init_args[@]}"
 fi
 
-repo sync -c -d --no-tags -j"${jobs}"
+repo sync -c -j"${jobs}"

@@ -65,11 +65,10 @@ repo init \
   -u https://github.com/open-vela/manifests.git \
   -b dev \
   -m openvela.xml \
-  --group=default,platform-linux \
   --depth=1 \
   --git-lfs
 
-repo sync -c -d --no-tags -j"$(nproc)"
+repo sync -c -j"$(nproc)"
 ```
 
 ## Build A Target
@@ -149,6 +148,52 @@ For `board:config` entries the runner searches the OpenVela workspace for
 `*/boards/<board>/configs/<config>` and passes the resolved path to
 `openvela-build`. This keeps the file format close to Apache NuttX while still
 using OpenVela's `build.sh` workflow.
+
+## NTFC Runtime Tests
+
+The Docker image includes `ntfc==0.0.1`, matching the current Apache NuttX CI
+workflow. Runtime tests are opt-in and follow the upstream NuttX structure:
+
+1. prepare `$NTFCDIR/external/nuttx-testing`
+2. build a target
+3. execute the target config's `run.sh`
+4. collect logs under the target artifact directory
+
+Prepare NTFC test cases inside an initialized OpenVela workspace:
+
+```bash
+openvela-ntfc-setup --dir /workspace/ntfc
+export NTFCDIR=/workspace/ntfc
+```
+
+Run runtime-enabled CI:
+
+```bash
+openvela-ci-quick \
+  --testlist "$OPENVELA_CI_TESTLIST_DIR/ntfc-smoke.dat" \
+  --run-tests
+```
+
+Use `--require-run-script` once the selected configs have OpenVela-specific
+runtime scripts. Without it, targets that do not yet provide `run.sh` are built
+and marked with runtime status `SKIP`.
+
+The expected `run.sh` contract matches Apache NuttX:
+
+```bash
+confpath="${CURRENTCONFDIR}/config.yaml"
+jsonconf="${CURRENTCONFDIR}/session.json"
+testpath="${NTFCDIR}/external/nuttx-testing"
+ntfc test --testpath="${testpath}" --confpath="${confpath}" --jsonconf="${jsonconf}"
+```
+
+The runner exports:
+
+```text
+CURRENTCONFDIR=<absolute target config directory>
+ARTIFACTCONFDIR=<absolute artifact directory for this target>
+NTFCDIR=<NTFC workspace from openvela-ntfc-setup>
+```
 
 ## Clean Local Data
 

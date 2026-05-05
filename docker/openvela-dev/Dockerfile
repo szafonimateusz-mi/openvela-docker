@@ -67,6 +67,7 @@ RUN apt-get update -qq \
     python-is-python3 \
     python3 \
     python3-pip \
+    python3-venv \
     qemu-efi-aarch64 \
     qemu-system-arm \
     qemu-system-misc \
@@ -98,6 +99,12 @@ RUN python3 -m pip install \
     pytest-ordering==0.6 \
     pytest-repeat==0.9.1 \
     stringcase
+
+RUN python3 -m venv /opt/ntfc-venv \
+  && /opt/ntfc-venv/bin/pip install \
+    ntfc==0.0.1 \
+    pytest==7.4.4 \
+  && ln -s /opt/ntfc-venv/bin/ntfc /usr/local/bin/ntfc
 
 RUN curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo \
       -o /usr/local/bin/repo \
