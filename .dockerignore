@@ -1,0 +1,8 @@
+.git
+.repo
+workspace
+ci-artifacts
+cmake_out
+out
+**/__pycache__
+**/.pytest_cache

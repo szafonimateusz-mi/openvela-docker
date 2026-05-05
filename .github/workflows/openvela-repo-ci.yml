@@ -1,0 +1,152 @@
+name: OpenVela Repo CI
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Docker image containing OpenVela CI tools.
+        required: true
+        type: string
+      manifest-url:
+        description: Repo manifest URL.
+        default: https://github.com/open-vela/manifests.git
+        required: false
+        type: string
+      manifest-branch:
+        description: Repo manifest branch.
+        default: dev
+        required: false
+        type: string
+      manifest-file:
+        description: Repo manifest file.
+        default: openvela.xml
+        required: false
+        type: string
+      manifest-groups:
+        description: Repo manifest groups.
+        default: default,platform-linux
+        required: false
+        type: string
+      testlist:
+        description: OpenVela CI testlist path inside the container.
+        default: /opt/openvela-ci/testlists/quick.dat
+        required: false
+        type: string
+      max-targets:
+        description: Maximum number of testlist targets to build.
+        default: "1"
+        required: false
+        type: string
+      jobs:
+        description: Parallelism for repo sync and build.
+        default: "4"
+        required: false
+        type: string
+      repo-path:
+        description: Manifest checkout path for the repository under test.
+        default: ""
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  openvela:
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ inputs.image }}
+      options: --user root
+    steps:
+      - name: Checkout change
+        uses: actions/checkout@v4
+        with:
+          path: change
+          fetch-depth: 0
+
+      - name: Initialize OpenVela workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${GITHUB_WORKSPACE}/openvela"
+          cd "${GITHUB_WORKSPACE}/openvela"
+
+          openvela-init \
+            --url "${{ inputs.manifest-url }}" \
+            --branch "${{ inputs.manifest-branch }}" \
+            --manifest "${{ inputs.manifest-file }}" \
+            --groups "${{ inputs.manifest-groups }}" \
+            --jobs "${{ inputs.jobs }}"
+
+      - name: Resolve repository path
+        id: repo_path
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          repo_path="${{ inputs.repo-path }}"
+          if [[ -z "${repo_path}" ]]; then
+            repo_name="${GITHUB_REPOSITORY#*/}"
+            manifest="${GITHUB_WORKSPACE}/openvela/.repo/manifests/${{ inputs.manifest-file }}"
+
+            repo_path="$(python3 - "${manifest}" "${repo_name}" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          manifest_path, repo_name = sys.argv[1:3]
+          root = ET.parse(manifest_path).getroot()
+          matches = [
+              project.attrib["path"]
+              for project in root.findall("project")
+              if project.attrib.get("name") == repo_name
+          ]
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"expected exactly one project named {repo_name!r}, found {len(matches)}"
+              )
+          print(matches[0])
+          PY
+          )"
+          fi
+
+          if [[ -z "${repo_path}" || "${repo_path}" == /* || "${repo_path}" == *".."* ]]; then
+            echo "Invalid repo path: ${repo_path}" >&2
+            exit 1
+          fi
+
+          echo "path=${repo_path}" >> "${GITHUB_OUTPUT}"
+          echo "OpenVela repository path: ${repo_path}"
+
+      - name: Overlay repository under test
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          repo_path="${{ steps.repo_path.outputs.path }}"
+          source_dir="${GITHUB_WORKSPACE}/change/"
+          target_dir="${GITHUB_WORKSPACE}/openvela/${repo_path}"
+
+          rm -rf "${target_dir}"
+          mkdir -p "$(dirname "${target_dir}")"
+          rsync -a --delete --exclude='.git' "${source_dir}" "${target_dir}/"
+
+      - name: Run OpenVela quick CI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "${GITHUB_WORKSPACE}/openvela"
+          openvela-ci-quick \
+            --testlist "${{ inputs.testlist }}" \
+            --max-targets "${{ inputs.max-targets }}" \
+            --jobs "${{ inputs.jobs }}" \
+            --keep-going
+
+      - name: Upload CI artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openvela-ci-artifacts
+          path: openvela/ci-artifacts/quick/**
+          if-no-files-found: warn

@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+workspace="workspace"
+image="openvela-dev"
+remove_workspace=0
+remove_image=0
+prune_docker=0
+force=0
+use_sudo=0
+
+usage() {
+  cat <<'EOF'
+Usage: openvela-clean-docker [options]
+
+Clean local OpenVela Docker development data from the host.
+
+By default this is a dry run. Pass --force to delete.
+
+Options:
+  --workspace <dir>      Workspace directory to remove. Default: workspace
+  --remove-workspace     Remove the workspace directory.
+  --remove-image         Remove openvela-dev Docker images.
+  --image <name>         Image name to remove. Default: openvela-dev
+  --prune-docker         Run docker system prune -f after removals.
+  --all                  Same as --remove-workspace --remove-image --prune-docker.
+  --sudo                 Use sudo for filesystem cleanup.
+  --force                Actually delete. Without this, only prints actions.
+  -h, --help             Show this help.
+
+Examples:
+  openvela-clean-docker --remove-workspace
+  openvela-clean-docker --all --force
+  openvela-clean-docker --remove-workspace --sudo --force
+  openvela-clean-docker --workspace /tmp/openvela-workspace --remove-workspace --force
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workspace)
+      workspace="$2"
+      shift 2
+      ;;
+    --remove-workspace)
+      remove_workspace=1
+      shift
+      ;;
+    --remove-image)
+      remove_image=1
+      shift
+      ;;
+    --image)
+      image="$2"
+      shift 2
+      ;;
+    --prune-docker)
+      prune_docker=1
+      shift
+      ;;
+    --all)
+      remove_workspace=1
+      remove_image=1
+      prune_docker=1
+      shift
+      ;;
+    --sudo)
+      use_sudo=1
+      shift
+      ;;
+    --force)
+      force=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "openvela-clean-docker: unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+run_or_print() {
+  if [[ "${force}" -eq 1 ]]; then
+    "$@"
+  else
+    printf 'DRY RUN:'
+    printf ' %q' "$@"
+    printf '\n'
+  fi
+}
+
+if [[ "${remove_workspace}" -eq 0 && "${remove_image}" -eq 0 && "${prune_docker}" -eq 0 ]]; then
+  usage
+  exit 0
+fi
+
+if [[ "${remove_workspace}" -eq 1 ]]; then
+  if [[ -e "${workspace}" ]]; then
+    if [[ "${use_sudo}" -eq 1 ]]; then
+      run_or_print sudo rm -rf -- "${workspace}"
+    else
+      run_or_print rm -rf -- "${workspace}"
+    fi
+  else
+    echo "workspace not found: ${workspace}"
+  fi
+fi
+
+if [[ "${remove_image}" -eq 1 ]]; then
+  mapfile -t image_ids < <(docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' \
+    | awk -v image="${image}" '$1 == image || $1 ~ "^" image ":" {print $2}' \
+    | sort -u)
+  if [[ "${#image_ids[@]}" -gt 0 ]]; then
+    run_or_print docker rmi "${image_ids[@]}"
+  else
+    echo "docker image not found: ${image}"
+  fi
+fi
+
+if [[ "${prune_docker}" -eq 1 ]]; then
+  run_or_print docker system prune -f
+fi
+
+if [[ "${force}" -eq 0 ]]; then
+  echo
+  echo "Dry run only. Re-run with --force to delete."
+fi

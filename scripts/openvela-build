@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+target="vendor/openvela/boards/vela/configs/goldfish-arm64-v8a-ap/"
+mode="cmake"
+jobs="$(nproc)"
+extra_flags=(-Werror)
+build_args=()
+
+usage() {
+  cat <<'EOF'
+Usage: openvela-build [target] [options] [-- build.sh args...]
+
+Build one OpenVela target from the workspace root.
+
+Options:
+  --cmake                 Build with OpenVela CMake flow. Default.
+  --make                  Build with OpenVela Makefile flow.
+  --jobs <n>              Build parallelism. Default: nproc
+  --extra-flags <flags>   Extra compiler flags passed after build.sh -e.
+                          Default: -Werror
+  --no-extra-flags        Do not pass any build.sh -e flags.
+  -h, --help              Show this help.
+
+Examples:
+  openvela-build
+  openvela-build vendor/openvela/boards/vela/configs/goldfish-x86_64-ap/ --cmake
+  openvela-build sim:nsh --make --jobs 8
+EOF
+}
+
+if [[ $# -gt 0 && "$1" != -* ]]; then
+  target="$1"
+  shift
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cmake)
+      mode="cmake"
+      shift
+      ;;
+    --make)
+      mode="make"
+      shift
+      ;;
+    --jobs|-j)
+      jobs="$2"
+      shift 2
+      ;;
+    --extra-flags)
+      read -r -a extra_flags <<< "$2"
+      shift 2
+      ;;
+    --no-extra-flags)
+      extra_flags=()
+      shift
+      ;;
+    --)
+      shift
+      build_args+=("$@")
+      break
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      build_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ ! -x ./build.sh ]]; then
+  echo "openvela-build: ./build.sh not found or not executable; run from OpenVela workspace root." >&2
+  exit 1
+fi
+
+cmd=(./build.sh "${target}")
+
+if [[ "${mode}" == "cmake" ]]; then
+  cmd+=(--cmake)
+fi
+
+for flag in "${extra_flags[@]}"; do
+  cmd+=(-e "${flag}")
+done
+
+cmd+=("-j${jobs}")
+cmd+=("${build_args[@]}")
+
+printf 'openvela-build:'
+printf ' %q' "${cmd[@]}"
+printf '\n'
+
+exec "${cmd[@]}"

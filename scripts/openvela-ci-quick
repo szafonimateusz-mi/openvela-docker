@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+jobs="$(nproc)"
+keep_output=0
+keep_going=0
+print_list=0
+max_targets=0
+artifact_root="ci-artifacts/quick"
+targets=(
+  "vendor/openvela/boards/vela/configs/goldfish-arm64-v8a-ap/ --cmake"
+  "vendor/openvela/boards/vela/configs/goldfish-x86_64-ap/ --cmake"
+)
+
+usage() {
+  cat <<'EOF'
+Usage: openvela-ci-quick [options]
+
+Run a small local OpenVela build smoke set. This is intentionally much smaller
+than Apache NuttX-style full CI.
+
+Options:
+  --quick              Accepted for explicitness; quick is the only mode now.
+  --jobs <n>           Build parallelism. Default: nproc
+  --target <spec>      Add one target spec, e.g. "path/to/config --cmake".
+                       Passing --target replaces the default smoke list.
+  --testlist <file>    Load targets from a NuttX/OpenVela-style testlist.
+                       Supported lines:
+                         path/to/config --cmake
+                         path/to/config --make
+                         CMake,path/to/config
+                         Make,path/to/config
+                         CMake,board:config
+                         board:config
+  --max-targets <n>    Limit loaded target count. 0 means no limit.
+  --artifact-dir <dir> Artifact/log directory. Default: ci-artifacts/quick
+  --keep-output        Do not delete cmake_out between targets.
+  --keep-going         Continue after failed target.
+  --print-list         Print resolved target specs without building.
+  -h, --help           Show this help.
+EOF
+}
+
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "${value}"
+}
+
+safe_target_name() {
+  local name="$1"
+  name="${name//\//_}"
+  name="${name//:/_}"
+  name="${name// /_}"
+  name="${name//,/}"
+  printf '%s' "${name}"
+}
+
+find_openvela_build() {
+  if command -v openvela-build >/dev/null 2>&1; then
+    command -v openvela-build
+    return
+  fi
+
+  if [[ -x "${script_dir}/openvela-build" ]]; then
+    printf '%s\n' "${script_dir}/openvela-build"
+    return
+  fi
+
+  echo "openvela-ci-quick: openvela-build not found in PATH or ${script_dir}" >&2
+  exit 1
+}
+
+resolve_config() {
+  local config="$1"
+  local board
+  local defconfig
+  local match
+
+  if [[ -d "${config}" || "${config}" == */configs/* ]]; then
+    printf '%s' "${config}"
+    return
+  fi
+
+  if [[ "${config}" == *:* ]]; then
+    board="${config%%:*}"
+    defconfig="${config#*:}"
+  elif [[ "${config}" == */* ]]; then
+    board="${config%%/*}"
+    defconfig="${config#*/}"
+  else
+    printf '%s' "${config}"
+    return
+  fi
+
+  match="$(find . -type d -path "*/boards/${board}/configs/${defconfig}" -print -quit 2>/dev/null || true)"
+  if [[ -n "${match}" ]]; then
+    printf '%s' "${match#./}"
+  else
+    printf '%s' "${config}"
+  fi
+}
+
+append_target() {
+  local spec="$1"
+  spec="$(trim "${spec}")"
+
+  if [[ -z "${spec}" ]]; then
+    return
+  fi
+
+  parsed_targets+=("${spec}")
+}
+
+load_testlist() {
+  local file="$1"
+  local line
+  local mode
+  local config
+  local target
+
+  if [[ ! -r "${file}" ]]; then
+    echo "openvela-ci-quick: cannot read testlist: ${file}" >&2
+    exit 2
+  fi
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%%#*}"
+    line="$(trim "${line}")"
+
+    if [[ -z "${line}" || "${line}" == -* ]]; then
+      continue
+    fi
+
+    case "${line}" in
+      [Cc][Mm][Aa][Kk][Ee],*)
+        mode="--cmake"
+        config="$(trim "${line#*,}")"
+        ;;
+      [Mm][Aa][Kk][Ee],*)
+        mode="--make"
+        config="$(trim "${line#*,}")"
+        ;;
+      *)
+        mode=""
+        config="${line}"
+        ;;
+    esac
+
+    if [[ -z "${mode}" ]]; then
+      if [[ "${config}" == *" --cmake"* || "${config}" == *" --make"* ]]; then
+        append_target "${config}"
+        continue
+      fi
+      mode="--make"
+    fi
+
+    config="${config%%,*}"
+    config="$(trim "${config}")"
+    target="$(resolve_config "${config}")"
+    append_target "${target} ${mode}"
+  done < "${file}"
+}
+
+custom_targets=()
+parsed_targets=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --quick)
+      shift
+      ;;
+    --jobs|-j)
+      jobs="$2"
+      shift 2
+      ;;
+    --target)
+      custom_targets+=("$2")
+      shift 2
+      ;;
+    --testlist)
+      load_testlist "$2"
+      shift 2
+      ;;
+    --max-targets)
+      max_targets="$2"
+      shift 2
+      ;;
+    --artifact-dir)
+      artifact_root="$2"
+      shift 2
+      ;;
+    --keep-output)
+      keep_output=1
+      shift
+      ;;
+    --keep-going)
+      keep_going=1
+      shift
+      ;;
+    --print-list)
+      print_list=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "openvela-ci-quick: unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ ${#custom_targets[@]} -gt 0 ]]; then
+  targets=("${custom_targets[@]}")
+elif [[ ${#parsed_targets[@]} -gt 0 ]]; then
+  targets=("${parsed_targets[@]}")
+fi
+
+if [[ ! "${jobs}" =~ ^[0-9]+$ || "${jobs}" -lt 1 ]]; then
+  echo "openvela-ci-quick: --jobs must be a positive integer" >&2
+  exit 2
+fi
+
+if [[ ! "${max_targets}" =~ ^[0-9]+$ ]]; then
+  echo "openvela-ci-quick: --max-targets must be a non-negative integer" >&2
+  exit 2
+fi
+
+if [[ "${max_targets}" -gt 0 && "${#targets[@]}" -gt "${max_targets}" ]]; then
+  targets=("${targets[@]:0:${max_targets}}")
+fi
+
+if [[ "${print_list}" -eq 1 ]]; then
+  printf '%s\n' "${targets[@]}"
+  exit 0
+fi
+
+if [[ ! -x ./build.sh ]]; then
+  echo "openvela-ci-quick: ./build.sh not found or not executable; run from OpenVela workspace root." >&2
+  exit 1
+fi
+
+openvela_build="$(find_openvela_build)"
+mkdir -p "${artifact_root}"
+
+status=0
+summary="${artifact_root}/summary.tsv"
+: > "${summary}"
+printf 'status\ttarget\tmode\tlog\n' >> "${summary}"
+
+for spec in "${targets[@]}"; do
+  read -r -a parts <<< "${spec}"
+  target="${parts[0]}"
+  args=("${parts[@]:1}")
+  mode="make"
+  for arg in "${args[@]}"; do
+    case "${arg}" in
+      --cmake)
+        mode="cmake"
+        ;;
+      --make)
+        mode="make"
+        ;;
+    esac
+  done
+
+  safe_name="$(safe_target_name "${target}")"
+  log_dir="${artifact_root}/${safe_name}"
+  log_file="${log_dir}/build.log"
+  mkdir -p "${log_dir}"
+
+  if [[ "${keep_output}" -eq 0 ]]; then
+    rm -rf cmake_out
+  fi
+
+  echo "=== openvela-ci-quick: ${target} ${args[*]} ==="
+  if "${openvela_build}" "${target}" "${args[@]}" --jobs "${jobs}" >"${log_file}" 2>&1; then
+    echo "PASS ${target}"
+    printf 'PASS\t%s\t%s\t%s\n' "${target}" "${mode}" "${log_file}" >> "${summary}"
+  else
+    echo "FAIL ${target}; see ${log_file}" >&2
+    printf 'FAIL\t%s\t%s\t%s\n' "${target}" "${mode}" "${log_file}" >> "${summary}"
+    status=1
+    if [[ "${keep_going}" -eq 0 ]]; then
+      break
+    fi
+  fi
+done
+
+echo "Summary: ${summary}"
+exit "${status}"

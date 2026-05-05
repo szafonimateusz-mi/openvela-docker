@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+outdir="${1:-cmake_out/vela_goldfish-arm64-v8a-ap/}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+usage() {
+  cat <<'EOF'
+Usage: openvela-emulator [cmake_out_dir] [emulator args...]
+
+Run OpenVela emulator output from the workspace root.
+
+Example:
+  openvela-emulator cmake_out/vela_goldfish-arm64-v8a-ap/
+EOF
+}
+
+if [[ "${outdir}" == "-h" || "${outdir}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ ! -x ./emulator.sh ]]; then
+  echo "openvela-emulator: ./emulator.sh not found or not executable; run from OpenVela workspace root." >&2
+  exit 1
+fi
+
+if [[ ! -d "${outdir}" ]]; then
+  echo "openvela-emulator: output directory not found: ${outdir}" >&2
+  exit 1
+fi
+
+exec ./emulator.sh "${outdir}" "$@"
