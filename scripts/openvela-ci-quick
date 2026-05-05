@@ -66,6 +66,45 @@ safe_target_name() {
   printf '%s' "${name}"
 }
 
+copy_cmake_logs() {
+  local log_dir="$1"
+  local cmake_dir
+  local artifact_name
+
+  while IFS= read -r cmake_dir; do
+    artifact_name="$(safe_target_name "${cmake_dir#./}")"
+    mkdir -p "${log_dir}/cmake/${artifact_name}"
+
+    for cmake_log in CMakeError.log CMakeOutput.log; do
+      if [[ -f "${cmake_dir}/${cmake_log}" ]]; then
+        cp "${cmake_dir}/${cmake_log}" "${log_dir}/cmake/${artifact_name}/${cmake_log}"
+      fi
+    done
+  done < <(find cmake_out -path '*/CMakeFiles' -type d 2>/dev/null || true)
+}
+
+print_failure_context() {
+  local target="$1"
+  local log_file="$2"
+  local log_dir="$3"
+  local cmake_error
+
+  if [[ "${log_tail_lines}" -eq 0 ]]; then
+    return
+  fi
+
+  echo "::group::${target} build log tail" >&2
+  tail -n "${log_tail_lines}" "${log_file}" >&2 || true
+  echo "::endgroup::" >&2
+
+  cmake_error="$(find "${log_dir}/cmake" -name CMakeError.log -type f -print -quit 2>/dev/null || true)"
+  if [[ -n "${cmake_error}" ]]; then
+    echo "::group::${target} CMakeError.log tail" >&2
+    tail -n "${log_tail_lines}" "${cmake_error}" >&2 || true
+    echo "::endgroup::" >&2
+  fi
+}
+
 find_openvela_build() {
   if command -v openvela-build >/dev/null 2>&1; then
     command -v openvela-build
@@ -297,11 +336,8 @@ for spec in "${targets[@]}"; do
     printf 'PASS\t%s\t%s\t%s\n' "${target}" "${mode}" "${log_file}" >> "${summary}"
   else
     echo "FAIL ${target}; see ${log_file}" >&2
-    if [[ "${log_tail_lines}" -gt 0 ]]; then
-      echo "::group::${target} build log tail" >&2
-      tail -n "${log_tail_lines}" "${log_file}" >&2 || true
-      echo "::endgroup::" >&2
-    fi
+    copy_cmake_logs "${log_dir}"
+    print_failure_context "${target}" "${log_file}" "${log_dir}"
     printf 'FAIL\t%s\t%s\t%s\n' "${target}" "${mode}" "${log_file}" >> "${summary}"
     status=1
     if [[ "${keep_going}" -eq 0 ]]; then
